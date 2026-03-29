@@ -11,37 +11,37 @@ const PATTERNS = [
     name: 'Private Key',
     severity: 'HIGH',
     regex: /-----BEGIN (RSA |EC |OPENSSH |DSA |ECDSA )?PRIVATE KEY-----/,
-    risk: 'Full server/certificate takeover.',
+    risk: 'Full server/certificate takeover. Attacker can impersonate your server or decrypt all traffic.',
   },
   {
     name: 'AWS Access Key',
     severity: 'HIGH',
     regex: /AKIA[0-9A-Z]{16}/,
-    risk: 'Full access to AWS resources.',
+    risk: 'Full access to AWS resources. Attacker can create/delete instances, incur charges, or exfiltrate data.',
   },
   {
     name: 'GitHub Token',
     severity: 'HIGH',
     regex: /ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{36,}/,
-    risk: 'Full read/write access to GitHub repositories.',
+    risk: 'Full read/write access to your GitHub repositories, including deletion.',
   },
   {
     name: 'Anthropic API Key',
     severity: 'MEDIUM',
     regex: /sk-ant-[a-zA-Z0-9\-]{32,}/,
-    risk: 'Unauthorized API usage billed to your account.',
+    risk: 'Unauthorized API usage billed to your account. Possible data access.',
   },
   {
     name: 'OpenAI API Key',
     severity: 'MEDIUM',
     regex: /sk-[a-zA-Z0-9\-]{32,}/,
-    risk: 'Unauthorized API usage billed to your account.',
+    risk: 'Unauthorized API usage billed to your account. Possible data access.',
   },
   {
     name: 'Generic API Key',
     severity: 'LOW',
     regex: /[Aa][Pp][Ii]_?[Kk][Ee][Yy]\s*=\s*["']?([^\s"']{16,})/,
-    risk: 'May allow unauthorized access depending on the service.',
+    risk: 'Depends on the service. May allow unauthorized access or actions.',
     captureGroup: 1,
   },
 ];
@@ -243,7 +243,7 @@ function scan() {
         findings.push({
           file, lineNum, matchedValue: valueMatch[0],
           severity: 'HIGH', patternName: 'AWS Secret Key',
-          risk: 'Full access to AWS resources.',
+          risk: 'Full access to AWS resources. Attacker can create/delete instances, incur charges, or exfiltrate data.',
         });
       }
     }
