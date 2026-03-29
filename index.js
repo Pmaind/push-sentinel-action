@@ -1,6 +1,8 @@
 const core = require('@actions/core');
 const github = require('@actions/github');
-const { execSync, spawnSync } = require('child_process');
+const { spawnSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
 // --- Patterns (same as push-sentinel npm package) ---
 
@@ -70,37 +72,93 @@ function isDummyValue(line) {
   return /\b(test_|fake_|example_|dummy_|placeholder)/i.test(line);
 }
 
-// --- Diff parsing ---
+// --- Ignore rules (.push-sentinel-ignore) ---
 
-function getDiff() {
+function loadIgnoreRules() {
+  const ignoreFile = path.join(process.env.GITHUB_WORKSPACE || process.cwd(), '.push-sentinel-ignore');
+  if (!fs.existsSync(ignoreFile)) return { lines: [], patterns: [] };
+
+  const content = fs.readFileSync(ignoreFile, 'utf8');
+  const lines = [];
+  const patterns = [];
+
+  for (const raw of content.split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    if (/[:\/\\*?]/.test(line) || line.includes('.')) {
+      lines.push(line);
+    } else {
+      patterns.push(line.toUpperCase());
+    }
+  }
+  return { lines, patterns };
+}
+
+function matchesGlob(filePath, rule) {
+  if (rule.endsWith('/**')) {
+    const dir = rule.slice(0, -3);
+    return filePath.startsWith(dir + '/') || filePath === dir;
+  }
+  if (rule.endsWith('*')) {
+    return filePath.startsWith(rule.slice(0, -1));
+  }
+  return false;
+}
+
+function matchesIgnoreFile(filePath, ignoreLines) {
+  for (const rule of ignoreLines) {
+    if (rule === filePath || matchesGlob(filePath, rule)) return true;
+  }
+  return false;
+}
+
+function matchesIgnoreLine(filePath, lineNum, ignoreLines) {
+  const target = `${filePath}:${lineNum}`;
+  for (const rule of ignoreLines) {
+    if (rule === target || matchesGlob(filePath, rule)) return true;
+  }
+  return false;
+}
+
+// --- Diff ---
+
+function runGit(args) {
+  const result = spawnSync('git', args, { encoding: 'utf8', stdio: 'pipe' });
+  return result.status === 0 ? (result.stdout || '') : null;
+}
+
+function getDiffRange() {
   const eventName = process.env.GITHUB_EVENT_NAME;
-  const baseSha = process.env.GITHUB_BASE_REF
-    ? spawnSync('git', ['rev-parse', `origin/${process.env.GITHUB_BASE_REF}`], { encoding: 'utf8', stdio: 'pipe' }).stdout.trim()
-    : null;
 
-  if (eventName === 'pull_request' && baseSha) {
-    const result = spawnSync('git', ['diff', baseSha, 'HEAD'], { encoding: 'utf8', stdio: 'pipe' });
-    if (result.status === 0) return result.stdout || '';
+  if (eventName === 'pull_request') {
+    const baseRef = process.env.GITHUB_BASE_REF;
+    if (baseRef) {
+      const baseSha = runGit(['rev-parse', `origin/${baseRef}`]);
+      if (baseSha) return { base: baseSha.trim(), head: 'HEAD' };
+    }
   }
 
-  // push event: diff against parent
-  const result = spawnSync('git', ['log', '-1', '-p', 'HEAD'], { encoding: 'utf8', stdio: 'pipe' });
-  return result.status === 0 ? (result.stdout || '') : '';
+  if (eventName === 'push') {
+    const payload = github.context.payload;
+    if (payload.before && !/^0+$/.test(payload.before)) {
+      return { base: payload.before, head: payload.after || 'HEAD' };
+    }
+  }
+
+  return { base: 'HEAD~1', head: 'HEAD' };
+}
+
+function getDiff() {
+  const { base, head } = getDiffRange();
+  return runGit(['diff', base, head]) ?? runGit(['log', '-1', '-p', 'HEAD']) ?? '';
 }
 
 function getChangedFiles() {
-  const eventName = process.env.GITHUB_EVENT_NAME;
-  const baseSha = process.env.GITHUB_BASE_REF
-    ? spawnSync('git', ['rev-parse', `origin/${process.env.GITHUB_BASE_REF}`], { encoding: 'utf8', stdio: 'pipe' }).stdout.trim()
-    : null;
-
-  if (eventName === 'pull_request' && baseSha) {
-    const result = spawnSync('git', ['diff', '--name-only', baseSha, 'HEAD'], { encoding: 'utf8', stdio: 'pipe' });
-    if (result.status === 0) return result.stdout.split('\n').map(f => f.trim()).filter(Boolean);
-  }
-
-  const result = spawnSync('git', ['diff', '--name-only', 'HEAD~1', 'HEAD'], { encoding: 'utf8', stdio: 'pipe' });
-  return result.status === 0 ? result.stdout.split('\n').map(f => f.trim()).filter(Boolean) : [];
+  const { base, head } = getDiffRange();
+  const out = runGit(['diff', '--name-only', base, head])
+    ?? runGit(['diff', '--name-only', 'HEAD~1', 'HEAD'])
+    ?? '';
+  return out.split('\n').map(f => f.trim()).filter(Boolean);
 }
 
 function parseDiffAddedLines(diff) {
@@ -127,18 +185,20 @@ function parseDiffAddedLines(diff) {
 // --- Scan ---
 
 function scan() {
+  const ignore = loadIgnoreRules();
   const findings = [];
-  const path = require('path');
 
   // .env file check
   const changedFiles = getChangedFiles();
   for (const f of changedFiles) {
     if (f === '.env' || f.endsWith('/.env') || /^\.env(\.|$)/.test(path.basename(f))) {
-      findings.push({
-        file: f, lineNum: null, matchedValue: null,
-        severity: 'MEDIUM', patternName: '.env file',
-        risk: 'Committing a .env file may expose multiple secrets at once.',
-      });
+      if (!matchesIgnoreFile(f, ignore.lines)) {
+        findings.push({
+          file: f, lineNum: null, matchedValue: null,
+          severity: 'MEDIUM', patternName: '.env file',
+          risk: 'Committing a .env file may expose multiple secrets at once.',
+        });
+      }
     }
   }
 
@@ -148,12 +208,17 @@ function scan() {
   const addedLines = parseDiffAddedLines(diff);
 
   for (const { file, lineNum, content } of addedLines) {
+    if (matchesIgnoreLine(file, lineNum, ignore.lines)) continue;
     if (isDummyValue(content)) continue;
 
     let matched = false;
     for (const pattern of PATTERNS) {
       const skipVarFilter = ['Private Key', 'AWS Access Key', 'GitHub Token', 'OpenAI API Key', 'Anthropic API Key'];
       if (!skipVarFilter.includes(pattern.name) && !VAR_NAME_KEYWORDS.test(content)) continue;
+
+      if (ignore.patterns.includes(pattern.name.toUpperCase().replace(/\s+/g, '_'))) continue;
+      const lineUpper = content.toUpperCase();
+      if (ignore.patterns.some((p) => lineUpper.includes(p))) continue;
 
       const match = content.match(pattern.regex);
       if (!match) continue;
