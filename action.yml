@@ -1,0 +1,21 @@
+name: 'push-sentinel'
+description: 'Scan git commits for leaked secrets (API keys, tokens, private keys)'
+author: 'Pmaind'
+
+inputs:
+  block-on-high:
+    description: 'Fail the check if HIGH severity secrets are found'
+    required: false
+    default: 'true'
+  comment-on-pr:
+    description: 'Post a comment on the PR with findings'
+    required: false
+    default: 'true'
+
+runs:
+  using: 'node20'
+  main: 'index.js'
+
+branding:
+  icon: 'shield'
+  color: 'red'
