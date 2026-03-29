@@ -47,7 +47,7 @@ jobs:
 ## How it works
 
 - **Pull requests**: scans the diff between the base branch and HEAD
-- **Pushes**: scans the latest commit
+- **Pushes**: scans all commits in the push
 - Findings appear as **check annotations** on the exact file and line
 - HIGH severity findings **fail the check** by default, preventing merge
 
